@@ -45,13 +45,14 @@
       font-weight: 700;
       font-size: 0.9rem;
       cursor: pointer;
+      touch-action: manipulation;
     }
     button.secondary {
       background: var(--card);
       color: var(--text);
       border: 1px solid var(--border);
     }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
     .card {
       background: var(--card);
       border: 1px solid var(--border);
@@ -61,10 +62,35 @@
     }
     .controls {
       display: flex;
+      align-items: center;
       gap: 8px;
       margin-bottom: 14px;
     }
-    select, input[type="password"], input[type="text"] {
+    .month-nav {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 4px;
+    }
+    .month-nav button {
+      background: transparent;
+      color: var(--text);
+      border: none;
+      padding: 6px 14px;
+      font-size: 1rem;
+      border-radius: 8px;
+    }
+    .month-label {
+      font-weight: 700;
+      font-size: 1rem;
+      letter-spacing: 0.03em;
+      cursor: pointer;
+    }
+    input[type="password"], input[type="text"] {
       background: #0f172a;
       color: var(--text);
       border: 1px solid var(--border);
@@ -72,7 +98,6 @@
       padding: 9px 12px;
       font-size: 0.95rem;
     }
-    select { flex: 1; }
     .key-row { display: flex; gap: 8px; margin-top: 8px; }
     .key-row input { flex: 1; min-width: 0; }
     .hint { font-size: 0.8rem; color: var(--muted); margin: 6px 0 0; }
@@ -109,12 +134,12 @@
       align-items: baseline;
       gap: 8px;
     }
-    .run-date { font-size: 0.8rem; color: var(--muted); }
+    .run-date { font-size: 0.82rem; color: var(--muted); }
     .run-title { font-weight: 600; font-size: 0.95rem; margin: 2px 0 6px; }
     .run-metrics {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 8px;
       font-size: 0.85rem;
       color: #cbd5e1;
     }
@@ -144,13 +169,13 @@
       <p class="hint">※キーはこの端末内（localStorage）だけに保存され、外部には送信されません。</p>
     </section>
 
-    <!-- 期間選択 & 同期 -->
+    <!-- 月切り替え & 同期 -->
     <div class="controls">
-      <select id="rangeSelect">
-        <option value="30">直近30日（ラン別）</option>
-        <option value="90" selected>直近90日（月別）</option>
-        <option value="365">直近1年（月別）</option>
-      </select>
+      <div class="month-nav">
+        <button id="prevMonthBtn" aria-label="前の月">◀</button>
+        <span id="monthLabel" class="month-label" title="タップで今月に戻る">----年--月</span>
+        <button id="nextMonthBtn" aria-label="次の月">▶</button>
+      </div>
       <button id="syncBtn">同期</button>
     </div>
 
@@ -159,7 +184,7 @@
     <!-- サマリー -->
     <section class="summary-grid">
       <div class="stat">
-        <div class="stat-label">総距離</div>
+        <div class="stat-label">月間走行距離</div>
         <div id="statDistance" class="stat-value">- km</div>
       </div>
       <div class="stat">
@@ -178,7 +203,7 @@
 
     <!-- グラフ -->
     <section class="card">
-      <div id="chartTitle" style="font-weight: 700; font-size: 0.95rem; margin-bottom: 8px;">月別走行距離 (km)</div>
+      <div id="chartTitle" style="font-weight: 700; font-size: 0.95rem; margin-bottom: 8px;">日別走行距離 (km)</div>
       <div class="chart-wrap">
         <canvas id="distanceChart"></canvas>
       </div>
@@ -193,15 +218,23 @@
 
   <script>
     const KEY_STORAGE = 'intervals_api_key';
-    const CACHE_STORAGE = 'intervals_runs_cache';
+    const CACHE_PREFIX = 'intervals_runs_month_';
+    const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
+
+    const today = new Date();
+    let currentYear = today.getFullYear();
+    let currentMonth = today.getMonth() + 1; // 1〜12
     let chartInstance = null;
+    let activeRequestId = 0;
 
     const el = {
       settingsPanel: document.getElementById('settingsPanel'),
       toggleSettingsBtn: document.getElementById('toggleSettingsBtn'),
       apiKeyInput: document.getElementById('apiKeyInput'),
       saveKeyBtn: document.getElementById('saveKeyBtn'),
-      rangeSelect: document.getElementById('rangeSelect'),
+      prevMonthBtn: document.getElementById('prevMonthBtn'),
+      nextMonthBtn: document.getElementById('nextMonthBtn'),
+      monthLabel: document.getElementById('monthLabel'),
       syncBtn: document.getElementById('syncBtn'),
       status: document.getElementById('status'),
       statDistance: document.getElementById('statDistance'),
@@ -212,11 +245,23 @@
       runList: document.getElementById('runList')
     };
 
-    function formatDate(date) {
-      const y = date.getFullYear();
-      const m = String(date.getMonth() + 1).padStart(2, '0');
-      const d = String(date.getDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
+    function getYmKey(year, month) {
+      return `${year}-${String(month).padStart(2, '0')}`;
+    }
+
+    function getDaysInMonth(year, month) {
+      return new Date(year, month, 0).getDate();
+    }
+
+    function isCurrentMonth(year, month) {
+      const now = new Date();
+      return year === now.getFullYear() && month === now.getMonth() + 1;
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, s => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[s]));
     }
 
     function formatPace(secPerKm) {
@@ -236,9 +281,17 @@
       return `${m}:${String(s).padStart(2, '0')}`;
     }
 
+    function formatRunDate(isoLocal) {
+      if (!isoLocal) return '-';
+      const [datePart, timePart] = isoLocal.split('T');
+      const [y, m, d] = datePart.split('-').map(Number);
+      const dow = WEEKDAYS[new Date(y, m - 1, d).getDay()];
+      const hm = timePart ? timePart.slice(0, 5) : '';
+      return `${m}/${d} (${dow}) ${hm}`;
+    }
+
     function normalizeCadence(raw) {
       if (!raw || raw <= 0) return null;
-      // 片足カウント(80-95前後)で返る場合は2倍してspmに揃える
       return Math.round(raw < 120 ? raw * 2 : raw);
     }
 
@@ -247,7 +300,29 @@
       el.status.className = isError ? 'status error' : 'status';
     }
 
-    async function fetchRuns() {
+    function updateMonthHeader() {
+      el.monthLabel.textContent = `${currentYear}年${currentMonth}月`;
+      el.nextMonthBtn.disabled = isCurrentMonth(currentYear, currentMonth);
+    }
+
+    function loadCache(ym) {
+      const raw = localStorage.getItem(CACHE_PREFIX + ym);
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+
+    function saveCache(ym, runs) {
+      localStorage.setItem(CACHE_PREFIX + ym, JSON.stringify({
+        runs,
+        updatedAt: new Date().toLocaleTimeString('ja-JP')
+      }));
+    }
+
+    async function fetchMonthRuns(year, month) {
       const apiKey = localStorage.getItem(KEY_STORAGE);
       if (!apiKey) {
         el.settingsPanel.classList.remove('hidden');
@@ -255,15 +330,15 @@
         return;
       }
 
-      const days = Number(el.rangeSelect.value);
-      const newest = new Date();
-      const oldest = new Date();
-      oldest.setDate(newest.getDate() - days);
+      const ym = getYmKey(year, month);
+      const lastDay = getDaysInMonth(year, month);
+      const oldest = `${ym}-01`;
+      const newest = `${ym}-${String(lastDay).padStart(2, '0')}`;
+      const url = `https://intervals.icu/api/v1/athlete/0/activities?oldest=${oldest}&newest=${newest}`;
 
-      const url = `https://intervals.icu/api/v1/athlete/0/activities?oldest=${formatDate(oldest)}&newest=${formatDate(newest)}`;
-
+      const reqId = ++activeRequestId;
       el.syncBtn.disabled = true;
-      setStatus('同期中...');
+      setStatus(`${year}年${month}月を同期中...`);
 
       try {
         const res = await fetch(url, {
@@ -279,20 +354,45 @@
 
         const data = await res.json();
         const runs = data
-          .filter(a => a.type && a.type.toLowerCase().includes('run'))
+          .filter(a => a.type && a.type.toLowerCase().includes('run') && (a.start_date_local || '').startsWith(ym))
           .sort((a, b) => (b.start_date_local || '').localeCompare(a.start_date_local || ''));
 
-        localStorage.setItem(CACHE_STORAGE, JSON.stringify({ days, runs, updatedAt: new Date().toLocaleTimeString('ja-JP') }));
-        render(runs, days);
+        saveCache(ym, runs);
+
+        // 連打して別月に移っていた場合は古い結果を上書きしない
+        if (reqId !== activeRequestId) return;
+
+        render(runs, year, month);
         setStatus(`同期完了（${runs.length}件・${new Date().toLocaleTimeString('ja-JP')}）`);
       } catch (err) {
+        if (reqId !== activeRequestId) return;
         setStatus(err.message, true);
       } finally {
-        el.syncBtn.disabled = false;
+        if (reqId === activeRequestId) {
+          el.syncBtn.disabled = false;
+        }
       }
     }
 
-    function render(runs, days) {
+    function showMonth(forceFetch = false) {
+      updateMonthHeader();
+      const ym = getYmKey(currentYear, currentMonth);
+      const cached = loadCache(ym);
+
+      if (cached) {
+        render(cached.runs || [], currentYear, currentMonth);
+        setStatus(`キャッシュ表示（最終同期 ${cached.updatedAt}）`);
+      } else {
+        render([], currentYear, currentMonth);
+      }
+
+      const hasKey = Boolean(localStorage.getItem(KEY_STORAGE));
+      if (hasKey && (forceFetch || !cached || isCurrentMonth(currentYear, currentMonth))) {
+        fetchMonthRuns(currentYear, currentMonth);
+      }
+    }
+
+    function render(runs, year, month) {
       const totalMeters = runs.reduce((sum, r) => sum + (r.distance || 0), 0);
       const totalSec = runs.reduce((sum, r) => sum + (r.moving_time || 0), 0);
       const totalKm = totalMeters / 1000;
@@ -307,126 +407,5 @@
       el.statPace.textContent = totalKm > 0 ? `${formatPace(totalSec / totalKm)} /km` : '- /km';
       el.statCadence.textContent = avgCadence ? `${avgCadence} spm` : '- spm';
 
-      renderChart(runs, days);
-      renderList(runs);
-    }
-
-    function renderChart(runs, days) {
-      const ctx = document.getElementById('distanceChart').getContext('2d');
-      if (chartInstance) chartInstance.destroy();
-
-      let labels = [];
-      let values = [];
-
-      if (days <= 30) {
-        el.chartTitle.textContent = 'ラン別距離 (km)';
-        const ordered = [...runs].reverse();
-        labels = ordered.map(r => (r.start_date_local || '').slice(5, 10));
-        values = ordered.map(r => Number(((r.distance || 0) / 1000).toFixed(2)));
-      } else {
-        el.chartTitle.textContent = '月別走行距離 (km)';
-        const byMonth = {};
-        runs.forEach(r => {
-          const ym = (r.start_date_local || '').slice(0, 7);
-          if (!ym) return;
-          byMonth[ym] = (byMonth[ym] || 0) + (r.distance || 0) / 1000;
-        });
-        labels = Object.keys(byMonth).sort();
-        values = labels.map(k => Number(byMonth[k].toFixed(1)));
-      }
-
-      chartInstance = new Chart(ctx, {
-        type: 'bar',
-        data: {
-          labels,
-          datasets: [{
-            label: '距離 (km)',
-            data: values,
-            backgroundColor: '#38bdf8',
-            borderRadius: 6
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
-          scales: {
-            x: { ticks: { color: '#94a3b8' }, grid: { display: false } },
-            y: { beginAtZero: true, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
-          }
-        }
-      });
-    }
-
-    function renderList(runs) {
-      if (!runs.length) {
-        el.runList.innerHTML = '<div class="hint">この期間のランニングデータがありません。</div>';
-        return;
-      }
-
-      el.runList.innerHTML = runs.map(r => {
-        const km = ((r.distance || 0) / 1000);
-        const pace = km > 0 ? formatPace((r.moving_time || 0) / km) : '-';
-        const dateStr = (r.start_date_local || '').replace('T', ' ').slice(0, 16);
-        const hr = r.average_heartrate ? `${Math.round(r.average_heartrate)} bpm` : null;
-        const spm = normalizeCadence(r.average_cadence);
-        const elev = r.total_elevation_gain ? `+${Math.round(r.total_elevation_gain)} m` : null;
-
-        return `
-          <div class="run-item">
-            <div class="run-head">
-              <span class="run-date">${dateStr}</span>
-              <span style="font-weight:700; color:#38bdf8;">${km.toFixed(2)} km</span>
-            </div>
-            <div class="run-title">${r.name || 'Run'}</div>
-            <div class="run-metrics">
-              <span class="badge">時間 ${formatDuration(r.moving_time)}</span>
-              <span class="badge">ペース ${pace}/km</span>
-              ${hr ? `<span class="badge">心拍 ${hr}</span>` : ''}
-              ${spm ? `<span class="badge">ピッチ ${spm} spm</span>` : ''}
-              ${elev ? `<span class="badge">獲得標高 ${elev}</span>` : ''}
-            </div>
-          </div>
-        `;
-      }).join('');
-    }
-
-    // イベント登録
-    el.toggleSettingsBtn.addEventListener('click', () => {
-      el.settingsPanel.classList.toggle('hidden');
-    });
-
-    el.saveKeyBtn.addEventListener('click', () => {
-      const key = el.apiKeyInput.value.trim();
-      if (!key) return;
-      localStorage.setItem(KEY_STORAGE, key);
-      el.settingsPanel.classList.add('hidden');
-      fetchRuns();
-    });
-
-    el.syncBtn.addEventListener('click', fetchRuns);
-    el.rangeSelect.addEventListener('change', fetchRuns);
-
-    // 初期起動
-    (function init() {
-      const savedKey = localStorage.getItem(KEY_STORAGE);
-      if (savedKey) {
-        el.apiKeyInput.value = savedKey;
-      } else {
-        el.settingsPanel.classList.remove('hidden');
-      }
-
-      const cached = localStorage.getItem(CACHE_STORAGE);
-      if (cached) {
-        try {
-          const parsed = JSON.parse(cached);
-          el.rangeSelect.value = String(parsed.days || 90);
-          render(parsed.runs || [], parsed.days || 90);
-        } catch {}
-      }
-
-      if (savedKey) fetchRuns();
-    })();
-  </script>
-</body>
-</html>
+      renderChart(runs, year, month);
+      renderList(runs, year, month);
